@@ -1,0 +1,17 @@
+# Ignore data, figure, and test folders
+data/
+figures/
+test/
+
+# Ignore Python specific files
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Ignore OS generated files
+Thumbs.db
+.DS_Store
+
+# IDE or OS junk (optional but helpful)
+.vscode/
+.idea/
