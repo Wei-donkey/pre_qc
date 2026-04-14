@@ -1,4 +1,4 @@
-# Scripts for Paper hourly precipitation quality control
+# Scripts for hourly precipitation quality control
 
 
 ## Description
@@ -14,13 +14,13 @@ will be saved to a local directory.
 The intermediate results, final tables, and figures will be saved locally as well.
 
 ## Project Structure
-__init__.py: adding an empty __init__.py file gives flexibility./n
-src/: Contains Python processing scripts./n
-data/: Raw, processed, and external data (ignored by Git)./n
+__init__.py: adding an empty __init__.py file gives flexibility. 
+src/: Contains Python processing scripts. 
+data/: Raw, processed, and external data (ignored by Git). 
 figures/: Output plots (ignored by Git).
 
 ## Usage
-Scripts starting with ora_ connect Oracle database and cannot run out of the domain network;/n
-Scripts starting with stat_ deal with the output file saved in local directories;/n
-Scripts starting with plot_ produce figures based on the processed data;/n
+Scripts starting with ora_ connect Oracle database and cannot run out of the domain network; 
+Scripts starting with stat_ deal with the output file saved in local directories; 
+Scripts starting with plot_ produce figures based on the processed data; 
 xxx.py is used to save functions for recognizing and assessing RHRE strength.

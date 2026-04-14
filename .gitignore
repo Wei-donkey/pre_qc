@@ -15,3 +15,6 @@ Thumbs.db
 # IDE or OS junk (optional but helpful)
 .vscode/
 .idea/
+
+# Ignore database config with passwords
+src/config_db.ini
