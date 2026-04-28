@@ -2,10 +2,9 @@
 """
 Plot precipitation events over 100mm against the data from neighboring stations as spatial scatter maps.
 The script is organized in three major blocks:
-1. data loading,
-2. database access,
+1. target data loading,
+2. neighboring data access from database,
 3. plotting.
-@author: Wei Liu
 """
 
 from __future__ import annotations
@@ -27,19 +26,18 @@ from sqlalchemy import create_engine
 
 
 SRC_DIR = Path(__file__).resolve().parent
-PROJ_DIR = SRC_DIR.parent
-DATA_DIR = PROJ_DIR / 'data'
-OUTPUT_DIR_FALSE = PROJ_DIR / 'figures' / 'false_precip_maps'
-OUTPUT_DIR_TRUE = PROJ_DIR / 'figures' / 'true_precip_maps'
-OUTPUT_DIR_UNCERTAIN = PROJ_DIR / 'figures' / 'uncertain_precip_maps'
+OUTPUT_DIR_FALSE = SRC_DIR.parent / 'figures' / 'false_precip_maps'
+OUTPUT_DIR_UNCERTAIN = SRC_DIR.parent / 'figures' / 'uncertain_precip_maps'
 OUTPUT_DIR_FALSE.mkdir(parents=True, exist_ok=True)
-OUTPUT_DIR_TRUE.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR_UNCERTAIN.mkdir(parents=True, exist_ok=True)
 
-PRECIP_FILE = DATA_DIR / 'gd_precip_hourly_2003-2025.csv'
-NEIGHBOR_FILE = DATA_DIR / 'gd_stations_neighbors.csv'
-LOCATION_FILE = DATA_DIR / 'gd_stations_locations.csv'
+TARGET_PRECIP_FILE = SRC_DIR.parent / 'data' / 'gd_precip_hourly_awst_2003-2025.csv'
+NEIGHBOR_FILE = SRC_DIR.parent / 'data' / 'gd_stations_neighbors.csv'
+LOCATION_FILE = SRC_DIR.parent / 'data' / 'gd_stations_locations.csv'
 CONFIG_FILE = SRC_DIR / 'config_db.ini'
+DB_SECTION = 'CROSS_WEATHER'
+DATA_TB_SURF = 'surf_cli_mul_hor'
+DATA_TB_AWST = 'awst_cli_mul_hor'
 
 STYLE_SETTINGS = {
     'style': 'seaborn-v0_8-darkgrid',
@@ -56,7 +54,21 @@ STYLE_SETTINGS = {
 }
 
 
-def set_plot_style() -> None:
+def load_db_config(config_path: Path, section: str):
+    config = configparser.ConfigParser()
+    config.read(config_path, encoding='utf-8-sig')
+
+    db = config[section]
+    return {
+        'user': db['user'],
+        'password': db['password'],
+        'host': db['host'],
+        'port': db['port'],
+        'service': db['service'],
+    }
+
+
+def set_plot_style():
     for key, value in STYLE_SETTINGS.items():
         if key == 'style':
             mpl.style.use(STYLE_SETTINGS['style'])
@@ -64,74 +76,103 @@ def set_plot_style() -> None:
             mpl.rcParams[key] = value
 
 
-def load_center_r() -> pd.DataFrame:
-    precip = pd.read_csv(PRECIP_FILE, dtype=str)
-    precip['r'] = pd.to_numeric(precip['r'], errors='coerce')
-    label_map = {0:'False', 1:'True',9:'Uncertain'}
-    precip['label'] = precip['datatype'].astype(int).map(label_map)
-    precip['ddatetime'] = pd.to_datetime(precip['ddatetime'], errors='coerce')
-    precip = precip.dropna(subset=['stacode', 'ddatetime', 'r']).copy()
-    precip['year'] = precip['ddatetime'].dt.year
-    precip['month'] = precip['ddatetime'].dt.month
-    precip = precip.sort_values(['ddatetime', 'r'], ascending=[True, False])
-    precip = precip[precip['r'] >= 100].reset_index(drop=True).copy()  # Filter for events with r >= 100mm
-    # precip = precip.iloc[0:10]  # For testing with a smaller subset of events
-    # precip = precip[precip['stacode']=='G2109'].reset_index(drop=True).copy() 
-    return precip
+def load_target_precip(target_precip_file: Path):
+    df = pd.read_csv(target_precip_file, header=0, dtype=str)
+    df = df.dropna(subset=['stacode', 'ddatetime', 'r']).copy()
+    df['r'] = pd.to_numeric(df['r'])
+    label_map = {0:'False',9:'Uncertain'}
+    df['label'] = df['datatype'].astype(int).map(label_map)
+    df['ddatetime'] = pd.to_datetime(df['ddatetime'])
+    df['year'] = df['ddatetime'].dt.year
+    df['month'] = df['ddatetime'].dt.month
+    df = df.sort_values(['ddatetime', 'r'], ascending=[True, False])
+    df = df[df['r'] >= 100].reset_index(drop=True).copy()  # Filter for events with r >= 100mm
+    return df
 
 
-def load_loc() -> pd.DataFrame:
-    loc_df = pd.read_csv(LOCATION_FILE, header=0, dtype=str, quotechar='"', engine='python',
-        names=['stacode', 'lon', 'lat', 'elevation', 'station_type'],
-        )
-    loc_df = loc_df.dropna(subset=['stacode', 'lon', 'lat']).copy()
-    loc_df['stacode'] = loc_df['stacode'].astype(str).str.strip()
-    loc_df['lon'] = pd.to_numeric(loc_df['lon'], errors='coerce')
-    loc_df['lat'] = pd.to_numeric(loc_df['lat'], errors='coerce')
-    loc_df = loc_df.dropna(subset=['lon', 'lat'])
-    loc_df = loc_df[['stacode', 'lon', 'lat']].drop_duplicates('stacode')
+def load_station_neighbors(neighbor_file: Path):
+    df = pd.read_csv(neighbor_file, header=0, dtype=str, quotechar='"', engine='python',
+                     names=['stacode', 'neighbors', 'count'])
+    df = df.dropna(subset=['stacode']).copy()
+    df['stacode'] = df['stacode'].astype(str).str.strip()
+    df['neighbors'] = df['neighbors'].fillna('').astype(str)
+    df['neighbors_list'] = df['neighbors'].str.split(',').apply(lambda x: [code.strip() for code in x if code and code.strip()])
+    df = df.set_index('stacode')['neighbors_list'].to_dict()
 
-    return loc_df
+    return df
 
 
-def load_neighbors() -> dict[str, list[str]]:
-    neighbors_df = pd.read_csv(NEIGHBOR_FILE, header=0, dtype=str, quotechar='"', engine='python',
-        names=['stacode', 'neighbors', 'count', 'updated'],
-        )
-    neighbors_df = neighbors_df.dropna(subset=['stacode']).copy()
-    neighbors_df['stacode'] = neighbors_df['stacode'].astype(str).str.strip()
-    neighbors_df['neighbors'] = neighbors_df['neighbors'].fillna('').astype(str)
-    neighbors_df['neighbors_list'] = neighbors_df['neighbors'].str.split(',').apply(lambda x: [code.strip() for code in x if code.strip()])
-    neighbor_map = neighbors_df.set_index('stacode')['neighbors_list'].to_dict()
+def load_sta_locations(location_file: Path):
+    df = pd.read_csv(location_file, header=0, dtype=str, quotechar='"', engine='python',
+                               names=['stacode', 'lon', 'lat', 'station_type'])
+    df = df.dropna(subset=['lon', 'lat']).copy()
+    df['stacode'] = df['stacode'].astype(str).str.strip()
+    df['lon'] = pd.to_numeric(df['lon'])
+    df['lat'] = pd.to_numeric(df['lat'])
 
-    return neighbor_map
+    return df
 
 
-def make_db_engine():
-    config = configparser.ConfigParser()
-    config.read(CONFIG_FILE, encoding='utf-8-sig')
-    db = config['CROSS_WEATHER']
-    user = db['user']
-    password = quote(db['password'])
-    host = db['host']
-    port = db['port']
-    service = db['service']
-    return create_engine(f"oracle+oracledb://{user}:{password}@{host}:{port}/{service}", echo=False)
+def create_db_engine(db_config: dict[str, str]):
+    password = quote(db_config['password'])
+    conn_string = (
+        f"oracle+oracledb://{db_config['user']}:{password}@{db_config['host']}"
+        f":{db_config['port']}/{db_config['service']}"
+    )
+    return create_engine(conn_string, echo=False)
 
 
-def plot_event(
-    center_lon: float,
-    center_lat: float,
-    center_r: float,
-    event_time: pd.Timestamp,
-    neighbor_gdf: gpd.GeoDataFrame,
-    output_path: Path,
-    center_code: str,
-    event_label: str,
-) -> None:
-    extent = [center_lon - 0.46, center_lon + 0.46, center_lat - 0.46, center_lat + 0.46]
+def fetch_neighbor_samples_from_db(engine, table_name_surf: str, table_name_awst: str,
+                                   time_stt: str, time_end: str, neighbors_code: list[str], sta_location: pd.DataFrame):
+    """
+    Fetch neighbor station (neighbor_map) precipitation records 
+    for a specific station (stacode) and time window (start_time_str - end_time_str).
+    """
+    
+    strtime_stt, strtime_end = time_stt.strftime('%Y-%m-%d %H:%M:%S'), time_end.strftime('%Y-%m-%d %H:%M:%S')
+    sql_surf = (
+        f"select stacode, ddatetime, r from {table_name_surf} "
+        f"where length(stacode)=5 "
+        f"and ddatetime between TO_DATE('{strtime_stt}', 'YYYY-MM-DD HH24:MI:SS') "
+        f"and TO_DATE('{strtime_end}', 'YYYY-MM-DD HH24:MI:SS') "
+        f"and r<=184.4"
+    )
+    sql_awst = (
+        f"select stacode, ddatetime, r from {table_name_awst} "
+        f"where length(stacode)=5 "
+        f"and ddatetime between TO_DATE('{strtime_stt}', 'YYYY-MM-DD HH24:MI:SS') "
+        f"and TO_DATE('{strtime_end}', 'YYYY-MM-DD HH24:MI:SS') "
+        f"and r<=184.4"
+    )
+    sql = f"{sql_surf} union all {sql_awst}"
+
+    with engine.connect() as conn:
+        df = pd.read_sql(sql, conn)
+    
+    df['stacode'] = df['stacode'].astype(str).str.strip()    
+    df = df.set_index(['stacode'])
+    df = df.loc[neighbors_code].reset_index()
+    df['r'] = pd.to_numeric(df['r'])
+    df = df.merge(sta_location[['stacode', 'lon', 'lat']], on='stacode', how='left')
+
+
+def plot_precip_event(event_label: str, center_code: str, center_lon: float, center_lat: float, 
+                      center_r: float, event_time: pd.Timestamp, neighbor_gdf: gpd.GeoDataFrame, output_path: Path,):
+    
     fig, ax = plt.subplots(figsize=(4, 4), subplot_kw={'projection': ccrs.PlateCarree()}, dpi=300)
+
+    # Calculate extent based on furthest neighbor station from center, with gap
+    if not neighbor_gdf.empty:
+        distances = np.sqrt((neighbor_gdf.geometry.x - center_lon)**2 + (neighbor_gdf.geometry.y - center_lat)**2)
+        max_distance = distances.max()
+        gap = 0.02  # gap beyond furthest station
+        extent_half = max_distance + gap
+    else:
+        extent_half = 0.46  # Default fallback
+    
+    extent = [center_lon - extent_half, center_lon + extent_half, center_lat - extent_half, center_lat + extent_half]
     ax.set_extent(extent, crs=ccrs.PlateCarree())
+
     land = cfeature.NaturalEarthFeature('physical', 'land', '10m', edgecolor='face', facecolor='#f0f0f0')
     ocean = cfeature.NaturalEarthFeature('physical', 'ocean', '10m', edgecolor='face', facecolor='#e6f0ff')
     coastline = cfeature.NaturalEarthFeature('physical', 'coastline', '10m', edgecolor='black', facecolor='none')
@@ -140,6 +181,7 @@ def plot_event(
     ax.add_feature(ocean, zorder=0)
     ax.add_feature(coastline, linewidth=0.5, zorder=1)
     ax.add_feature(borders, linewidth=0.5, alpha=0.5, zorder=1)
+
     gl = ax.gridlines(draw_labels=True, linewidth=0.3, color='gray', alpha=0.7, linestyle='--')
     gl.top_labels = False
     gl.right_labels = False
@@ -154,6 +196,10 @@ def plot_event(
 
     if not neighbor_gdf.empty:
         vmax = float(max(neighbor_gdf['r'].max(), 0.1))
+        # Scale scatter size based on precipitation (1 to 25)
+        neighbor_gdf = neighbor_gdf.copy()
+        neighbor_gdf['size'] = 10 + 15 * (neighbor_gdf['r'] / vmax)
+        
         scatter = ax.scatter(
             neighbor_gdf.geometry.x,
             neighbor_gdf.geometry.y,
@@ -161,7 +207,7 @@ def plot_event(
             cmap='viridis',
             vmin=0,
             vmax=vmax,
-            s=25,
+            s=neighbor_gdf['size'],
             # edgecolor='black',
             linewidth=0.3,
             transform=ccrs.PlateCarree(),
@@ -176,7 +222,7 @@ def plot_event(
         for _, row in large_values.iterrows():
             ax.text(
                 row.geometry.x + 0.01,
-                # row.geometry.y + 0.01,
+                row.geometry.y + 0.01,
                 f"{row['r']:.1f}",
                 transform=ccrs.PlateCarree(),
                 fontsize=5,
@@ -221,94 +267,51 @@ def plot_event(
     plt.close(fig)
 
 
-def main() -> None:
+def main():
     set_plot_style()
 
-    print('Loading precipitation and station metadata...')
-    precip, neighbor_map, loc_df = load_center_r(), load_neighbors(), load_loc()
-    print(f"Loaded {len(precip)} event(s), {len(neighbor_map)} neighbor station entries, {len(loc_df)} station locations.")
+    target_precip = load_target_precip(TARGET_PRECIP_FILE)
+    neighbor_map = load_station_neighbors(NEIGHBOR_FILE)
+    sta_location = load_sta_locations(LOCATION_FILE)
+    print(f"Loaded {len(target_precip)} event(s), {len(neighbor_map)} neighbor station entries, {len(sta_location)} station locations.")
+    # target_precip = target_precip.copy()
 
-    precip = precip.copy()
+    db_config = load_db_config(CONFIG_FILE, DB_SECTION)
+    engine = create_db_engine(db_config)
 
-    print('Connecting to database...')
-    engine = make_db_engine()
-    print('Database connection established.')
-
-    for idx, event in precip.iterrows():
-        print(f"Processing event {idx+1}/{len(precip)}: {event['stacode']} at {event['ddatetime']}")
-        year = int(event['year'])
+    for idx, event in target_precip.iterrows():
+        center_code = str(event['stacode']).strip()
         event_time = event['ddatetime']
+        print(f"Processing event {idx+1}/{len(target_precip)}: {center_code} at {event_time}")
 
-        dt_str = event_time.strftime('%Y-%m-%d %H:%M:%S')
-        sql_awst = (
-            f"select stacode, ddatetime, r from awst_cli_mul_hor_{year} "
-            f"where length(stacode)=5 "
-            f"and ddatetime = TO_DATE('{dt_str}', 'YYYY-MM-DD HH24:MI:SS')"
-        )
-        sql_surf = (
-            f"select stacode, ddatetime, r from surf_cli_mul_hor_{year} "
-            f"where length(stacode)=5 "
-            f"and ddatetime = TO_DATE('{dt_str}', 'YYYY-MM-DD HH24:MI:SS')"
-        )
-
-        with engine.connect() as conn:
-            awst_df = pd.read_sql(sql_awst, conn)
-            surf_df = pd.read_sql(sql_surf, conn)
-
-        precip_df = pd.concat([awst_df, surf_df], ignore_index=True)
-
-        print(f"  Queried AWST and SURF data for {event['stacode']} at {event_time}")
-        if precip_df.empty:
-            print(f"  No precipitation records found for event {event['stacode']} at {event_time}")
-            continue
-
-        precip_df['stacode'] = precip_df['stacode'].astype(str).str.strip()
-        precip_df['r'] = pd.to_numeric(precip_df['r'], errors='coerce')
-
-        neighbor_codes = neighbor_map.get(event['stacode'], [])
-        if not neighbor_codes:
-            print(f"  Skipping event {event['stacode']} at {event_time}: no neighbors found")
-            continue
-
-        neighbor_df = precip_df[precip_df['stacode'].isin(neighbor_codes)].copy()
-        if neighbor_df.empty:
-            print(f"  Skipping event {event['stacode']} at {event_time}: no neighbor records in query result")
-            continue
-
-        neighbor_df = neighbor_df.merge(loc_df, on='stacode', how='inner')
-        neighbor_df = neighbor_df.dropna(subset=['lon', 'lat', 'r'])
-        if neighbor_df.empty:
-            print(f"  Skipping event {event['stacode']} at {event_time}: neighbors have no lon/lat or r")
-            continue
-
-        print(f"Found {len(neighbor_df)} neighbor station record(s) for plotting")
-
-        center_loc = loc_df[loc_df['stacode'] == event['stacode']]
+        center_loc = sta_location[sta_location['stacode'] == center_code]
         if center_loc.empty:
             print(f"Skipping event {event['stacode']} at {event_time}: missing center lon/lat")
             continue
 
+        year = int(event['year'])
+        data_tb_surf = f"{DATA_TB_SURF}_{year}" 
+        data_tb_awst = f"{DATA_TB_AWST}_{year}"
+
+        neighbors = neighbor_map.get(center_code, [])
+        neighbors_code = sorted({center_code} | set(neighbors)) 
+
+        neighbors_df = fetch_neighbor_samples_from_db(engine, data_tb_surf, data_tb_awst, event_time, event_time, neighbors_code, sta_location)
+
         center_lon = float(center_loc.iloc[0].lon)
         center_lat = float(center_loc.iloc[0].lat)
-        center_code = event['stacode']
         center_r = float(event['r'])
-        if center_r == 338.8:
-            print(f"  Warning: center station {center_code} has r=338.8, which may indicate a data issue")
 
-        neighbor_gdf = gpd.GeoDataFrame(
-            neighbor_df,
-            geometry=gpd.points_from_xy(neighbor_df.lon, neighbor_df.lat),
-            crs='EPSG:4326',
-        )
+        neighbor_gdf = gpd.GeoDataFrame(neighbors_df, 
+                                        geometry=gpd.points_from_xy(neighbors_df.lon, neighbors_df.lat), 
+                                        crs='EPSG:4326', )
 
-        event_label = precip.iloc[idx].label
-        if event_label == 'True': output_dir = OUTPUT_DIR_TRUE
-        elif event_label == 'False': output_dir = OUTPUT_DIR_FALSE
+        event_label = event['label']
+        if event_label == 'False': output_dir = OUTPUT_DIR_FALSE
         elif event_label == 'Uncertain': output_dir = OUTPUT_DIR_UNCERTAIN
         output_path = output_dir / f"{center_code}_{event_time.strftime('%Y%m%d_%H%M')}.png"
-        plot_event(center_lon, center_lat, center_r, event_time, neighbor_gdf, output_path, center_code,event_label)
-        print(f"Saved {output_path} (neighbors: {len(neighbor_gdf)})\n"
-              "============================================================================")
+        plot_precip_event(event_label, center_code, center_lon, center_lat, center_r, event_time, neighbor_gdf, output_path)
+        print(f"Saved {output_path} (neighbors: {len(neighbor_gdf)})")
 
     engine.dispose()
     print(f"Finished at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}")
