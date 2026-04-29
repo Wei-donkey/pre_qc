@@ -1,12 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Created on Thu April 13 20:15:51 2026
-This script queries awst-type target events (r >= 50mm) from Oracle database tables (awst_cli_mul_hor_yyyy),
+This script queries surf-type target events (r >= 50mm) from Oracle database tables (surf_cli_mul_hor_yyyy),
 finds neighbor stations from 'gd_stations_neighbors.csv', and extract precipitation records from Oracle 
 (surf_cli_mul_hor_yyyy/ awst_cli_mul_hor_yyyy) for the target timestamp plus 'window_hours' before and after.
 The default window is 2 hours, producing samples at [T-2, T-1, T, T+1, T+2].
-1. Hourly precipitation over climate limit-184.4mm are absolutely incorrect.
-2. Hourly precipitation between 50~184.4mm are to be inspected for their reliability.
 """
 
 from __future__ import annotations
@@ -25,13 +22,12 @@ DATA_TB_SURF = 'surf_cli_mul_hor'
 DATA_TB_AWST = 'awst_cli_mul_hor'
 NEIGHBOR_FILE = SRC_DIR.parent / 'data' / 'gd_stations_neighbors.csv'
 WINDOW_HOURS = 2
-event_shreshold = 184.4
+event_shreshold = 50
 
 year_stt, year_end = 2003, 2025
 years = range(year_stt, year_end+1)
 
-OUTPUT = SRC_DIR.parent / 'data' / f"gd_awst_event_neigbhor_precip_{year_stt}-{year_end}.csv"
-
+OUTPUT = SRC_DIR.parent / 'data' / f"gd_event_true_neigbhor_precip_{year_stt}-{year_end}.csv"
 
 def load_db_config(config_path: Path, section: str):
     config = configparser.ConfigParser()
@@ -54,11 +50,11 @@ def create_db_engine(db_config: dict[str, str]):
     return create_engine(conn_string, echo=False)
 
 
-def fetch_false_awst_events_from_db(engine, table_name: str):
-    """Load awst-type target events with r >= 184.4 from a specific year's datatable."""
+def fetch_true_surf_events_from_db(engine, table_name: str):
+    """Load surf-type target events with r >= 50 from a specific year's datatable."""
     sql = (f"select stacode, ddatetime, r "
            f"from {table_name} "
-           f"where r>{event_shreshold} ")
+           f"where r>={event_shreshold} ")
     
     with engine.connect() as conn:
         df = pd.read_sql(sql, conn)
@@ -88,7 +84,7 @@ def extract_neighbor_samples_from_db(engine, table_name_surf: str, table_name_aw
         f"select stacode, ddatetime, r from {table_name_surf} "
         f"where ddatetime between TO_DATE('{strtime_stt}', 'YYYY-MM-DD HH24:MI:SS') "
         f"and TO_DATE('{strtime_end}', 'YYYY-MM-DD HH24:MI:SS') "
-        f"and r >= 0.1 "
+        # f"and r >= 0.1 "
         f"and r <= 184.4 "
         # f"and length(stacode)=5 "
     )
@@ -96,7 +92,7 @@ def extract_neighbor_samples_from_db(engine, table_name_surf: str, table_name_aw
         f"select stacode, ddatetime, r from {table_name_awst} "
         f"where ddatetime between TO_DATE('{strtime_stt}', 'YYYY-MM-DD HH24:MI:SS') "
         f"and TO_DATE('{strtime_end}', 'YYYY-MM-DD HH24:MI:SS') "
-        f"and r >= 0.1 "
+        # f"and r >= 0.1 "
         f"and r <= 184.4 "
         # f"and length(stacode)=5 "
     )
@@ -128,15 +124,18 @@ def main():
         data_tb_surf = f"{DATA_TB_SURF}_{year}"
         data_tb_awst = f"{DATA_TB_AWST}_{year}"
 
-        # Load target events from awst stations first
-        events = fetch_false_awst_events_from_db(engine, data_tb_awst)
+        # Load target events from surf stations first
+        events = fetch_true_surf_events_from_db(engine, data_tb_surf)
+        if events.empty:
+            print(f"  No events found for {year}.")
+            continue
+        
         # Filter events to keep only stations present in neighbor_map (land stations)
-        if not events.empty:
-            events = events[events['stacode'].isin(neighbor_map.keys())].reset_index(drop=True)
+        events = events[events['stacode'].isin(neighbor_map.keys())].reset_index(drop=True)
         if events.empty:
             print(f"  No land-station events found for {year}.")
             continue
-        
+
         for idx, event in events.iterrows():
             print(f"  Processing event {idx+1}/{len(events)}: {event['stacode']} at {event['ddatetime']}")
             station_code = str(event['stacode']).strip()
@@ -168,5 +167,5 @@ def main():
     engine.dispose()
 
 
-if __name__=='__main__':
+if __name__ == '__main__':
     main()
