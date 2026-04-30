@@ -43,7 +43,7 @@ def create_db_engine(db_config: dict[str, str]):
 
 def fetch_locations_from_db(engine, table_name: str):
     sql = (
-        f"select v01301 stacode, v05001 lat, v06001 lon, "
+        f"select v01301 stacode, v05001 lat, v06001 lon, to_char(stt_date,'yyyy-mm-dd') date_stt, "
         f"case "
         f"when v02301 like '%A%' then 'surf' "
         f"when v02301 like '%B%' then 'awst' "
@@ -51,6 +51,8 @@ def fetch_locations_from_db(engine, table_name: str):
         f"from {table_name} "
         f"where v_prcode = '广东' "
         f"and (v02301 like '%A%' or v02301 like '%B%') "
+        f"and extract(year from stt_date)>1899 "
+        f"and extract(year from stt_date)<2026 "
         f"and inland=1 "
     )
     with engine.connect() as conn:
