@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Fetch longitude and latitude for stations in 广东 that have 5-digit codes and station type markers A/B.
-Only stations matching v_prcode='广东', length(v01301)=5, and v02301 like '%A%' or '%B%' are returned.
+Fetch longitude, latitude, and starting date for stations in 广东 that have station type markers A/B.
+Only inland stations matching v_prcode='广东', v02301 like '%A%' or '%B%', and date between 2003-2025 are returned.
 """
 
 from __future__ import annotations
