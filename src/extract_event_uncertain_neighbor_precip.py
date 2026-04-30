@@ -2,7 +2,7 @@
 """
 Created on Thu April 13 20:15:51 2026
 This script queries awst-type target events (50<=r<=184.4) from Oracle database tables (awst_cli_mul_hor_yyyy),
-finds neighbor stations from 'gd_stations_neighbors.csv', and extract precipitation records from Oracle 
+finds neighbor stations within 50km from 'gd_stations_neighbors.csv', and extract precipitation records from Oracle 
 (surf_cli_mul_hor_yyyy/ awst_cli_mul_hor_yyyy) for the target timestamp plus 'window_hours' before and after.
 The default window is 2 hours, producing samples at [T-2, T-1, T, T+1, T+2].
 Note1: Hourly precipitation between 50~184.4mm are to be inspected for their reliability.
@@ -25,6 +25,7 @@ DB_SECTION = 'CROSS_WEATHER'
 DATA_TB_SURF = 'surf_cli_mul_hor'
 DATA_TB_AWST = 'awst_cli_mul_hor'
 NEIGHBOR_FILE = SRC_DIR.parent / 'data' / 'gd_stations_neighbors.csv'
+NEIGHBOR_RADIUS = 50.0
 WINDOW_HOURS = 2
 event_shreshold_min = 50.0
 event_shreshold_max = 184.4
@@ -70,11 +71,11 @@ def fetch_false_awst_events_from_db(engine, table_name: str):
     return df
 
 
-def load_station_neighbors(neighbor_file: Path):
+def load_station_neighbors(neighbor_file: Path, column_name: str):
     df = pd.read_csv(neighbor_file, header=0, dtype=str, quotechar='"', engine='python')
     df['stacode'] = df['stacode'].astype(str).str.strip()
-    df['neighbors'] = df['neighbors'].fillna('').astype(str)
-    df['neighbors_list'] = df['neighbors'].str.split(',').apply(
+    df[column_name] = df[column_name].fillna('').astype(str)
+    df['neighbors_list'] = df[column_name].str.split(',').apply(
         lambda x: [code.strip() for code in x if code and code.strip()])
     
     return df.set_index('stacode')['neighbors_list'].to_dict()
@@ -198,8 +199,7 @@ def main():
     db_config = load_db_config(CONFIG_FILE, DB_SECTION)
     engine = create_db_engine(db_config)
 
-    neighbor_map = load_station_neighbors(NEIGHBOR_FILE)
-
+    neighbor_map = load_station_neighbors(NEIGHBOR_FILE, str('neighbors'+str(int(NEIGHBOR_RADIUS))))
     all_data = []
     for year in years:
         year_data = []
